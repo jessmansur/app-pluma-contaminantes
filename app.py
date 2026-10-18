@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
 import streamlit as st
 import numpy as np
+import matplotlib.pyplot as plt
 import folium
-from folium.plugins import HeatMap
 
 st.set_page_config(layout="wide", page_title="Modelo de Dispersión Atmosférica")
 
@@ -22,7 +22,7 @@ h = st.sidebar.number_input("Altura de liberación h [m]", value=5.0, step=1.0)
 zr = st.sidebar.number_input("Altura de receptor zr [m]", value=0.1, step=0.1)
 lim = st.sidebar.slider("Límite de alcance horizontal [m]", 100, 5000, 1000)
 
-# --- COEFICIENTES DE KLUG ---
+# --- COEFICIENTES DE KLUG (TUS ECUACIONES ORIGINALES) ---
 if CL == 'A':
     ay, by, az, bz, f_e_y = 0.469, 0.903, 0.017, 1.380, 10
 elif CL == 'B':
@@ -36,16 +36,16 @@ elif CL == 'E':
 elif CL == 'F':
     ay, by, az, bz, f_e_y = 0.273, 0.594, 0.262, 0.500, 10
 
-# --- CÁLCULO DE LA DISPERSIÓN ---
-x = np.arange(0.1, lim, lim / 100)
-y = np.arange(-lim / f_e_y, lim / f_e_y, (2 * lim / f_e_y) / 100)
+# --- CÁLCULO DE LA DISPERSIÓN (FÓRMULA GAUSSIANA EXACTA) ---
+x = np.linspace(0.1, lim, 300)
+y = np.linspace(-lim / f_e_y, lim / f_e_y, 300)
 
 X, Y = np.meshgrid(x, y)
 
 sig_y = ay * X ** by
 sig_z = az * X ** bz
 
-Conc_con = q / (2 * 3.14159 * u * sig_y * sig_z) * np.exp(-Y**2 / (2 * sig_y ** 2)) * np.exp(-(zr - h)**2 / (2 * sig_z ** 2))
+Conc_con = q / (2 * np.pi * u * sig_y * sig_z) * np.exp(-Y**2 / (2 * sig_y ** 2)) * np.exp(-(zr - h)**2 / (2 * sig_z ** 2))
 
 # --- TRANSFORMACIÓN GEOGRÁFICA Y ROTACIÓN POR VIENTO ---
 wind_rad = np.radians((270 - wind_dir) % 360)
@@ -59,19 +59,28 @@ m_per_deg_lon = 111139.0 * np.cos(np.radians(lat_src))
 lat_grid = lat_src + (Y_rot / m_per_deg_lat)
 lon_grid = lon_src + (X_rot / m_per_deg_lon)
 
-heat_data = []
-c_max = Conc_con.max()
+# --- GENERACIÓN DE ISOPLETAS / CONTORNOS CON MATPLOTLIB ---
+fig, ax = plt.subplots(figsize=(8, 8))
+fig.patch.set_alpha(0.0)
+ax.patch.set_alpha(0.0)
 
-for i in range(Conc_con.shape[0]):
-    for j in range(Conc_con.shape[1]):
-        val = Conc_con[i, j]
-        if val > (c_max * 1e-4):
-            heat_data.append([lat_grid[i, j], lon_grid[i, j], float(val)])
+levels = np.linspace(Conc_con.max() * 0.01, Conc_con.max(), 25)
 
-# --- RENDERIZADO DEL MAPA ---
+contour = ax.contourf(lon_grid, lat_grid, Conc_con, levels=levels, cmap='turbo', alpha=0.65)
+ax.axis('off')
+
+plt.subplots_adjust(top=1, bottom=0, right=1, left=0, hspace=0, wspace=0)
+plt.margins(0, 0)
+ax.xaxis.set_major_locator(plt.NullLocator())
+ax.yaxis.set_major_locator(plt.NullLocator())
+
+fig.savefig("plume_contour.png", format='png', transparent=True, bbox_inches='tight', pad_inches=0)
+plt.close(fig)
+
+# --- RENDERIZADO EN EL MAPA FOLIUM ---
 st.subheader(f"Mapa de Concentración de Pluma — Clase de Estabilidad {CL}")
 
-m = folium.Map(location=[lat_src, lon_src], zoom_start=13, tiles="OpenStreetMap")
+m = folium.Map(location=[lat_src, lon_src], zoom_start=14, tiles="OpenStreetMap")
 
 folium.Marker(
     [lat_src, lon_src],
@@ -79,14 +88,14 @@ folium.Marker(
     icon=folium.Icon(color="red", icon="industry", prefix="fa")
 ).add_to(m)
 
-if heat_data:
-    HeatMap(
-        heat_data,
-        radius=15,
-        blur=20,
-        max_zoom=1,
-        gradient={0.2: 'blue', 0.4: 'cyan', 0.6: 'lime', 0.8: 'yellow', 1.0: 'red'}
-    ).add_to(m)
+bounds = [[lat_grid.min(), lon_grid.min()], [lat_grid.max(), lon_grid.max()]]
+folium.raster_layers.ImageOverlay(
+    image="plume_contour.png",
+    bounds=bounds,
+    opacity=0.75,
+    interactive=True,
+    cross_origin=False
+).add_to(m)
 
 st.components.v1.html(m._repr_html_(), height=600)
-st.info(f"Concentración Máxima Calculada: **{c_max:.2e} g/m³**")
+st.info(f"Concentración Máxima Calculada: **{Conc_con.max():.2e} g/m³**")
